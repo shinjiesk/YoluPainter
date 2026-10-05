@@ -591,6 +591,7 @@ mod tests {
                     agent: "試験のスタンドアロン".into(),
                     versions: None,
                     features: peer,
+                    client: None,
                 },
             });
         }

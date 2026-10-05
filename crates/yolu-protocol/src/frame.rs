@@ -231,6 +231,7 @@ mod tests {
             features: 0,
             auth: None,
             versions: None,
+            client: None,
         });
         let mut data = encode_message(&a);
         data.extend(encode_message(&Message::Bye));

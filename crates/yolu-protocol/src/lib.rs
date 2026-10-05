@@ -8,6 +8,10 @@
 //!
 //! 命令はパイプ（`link`。Windows は名前付きパイプ、Linux は Unix のソケット）に枠（`frame`）で流す。版と知らない命令の扱いは `message`。
 //! この形を読むのは Rust 同士だけ（Unity の C# はブリッジの C の関数を呼ぶ）なので、C# に同じ読み手は要らない。
+//!
+//! つなぐ側の役は Unity のブリッジだけに限らない。Unity でないアプリのブリッジは、挨拶でそのアプリの名前を名乗る（`Hello::client`・
+//! `Identity::client`）。スタンドアロンは、名乗った相手とつながっているあいだ、画面の文の「Unity」の所にその名前を出す。名乗らない相手
+//! （Unity のブリッジ）は今までどおり。
 
 // 画素（4 バイト）・数（4 バイト）を chunks_exact で回すのは読みやすさのため（yolu-core と同じ）。
 #![allow(clippy::chunks_exact_to_as_chunks)]

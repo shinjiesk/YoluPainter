@@ -163,6 +163,8 @@ pub struct Identity {
     pub features: u64,
     /// 自分が読めるプロトコルの版の範囲（既定はこの版の範囲。試験が重ならない範囲の相手を作るために選べる）。
     pub protocol: (u16, u16),
+    /// つなぐ側のアプリの名前（`Hello::client`。Unity のブリッジとスタンドアロンは名乗らない）。
+    pub client: Option<String>,
 }
 
 impl Identity {
@@ -175,6 +177,7 @@ impl Identity {
             min_peer: MIN_UNITY_PACKAGE,
             features: 0,
             protocol: DEFAULT_PROTOCOL_RANGE,
+            client: None,
         }
     }
 
@@ -187,6 +190,17 @@ impl Identity {
             min_peer: MIN_STANDALONE,
             features: 0,
             protocol: DEFAULT_PROTOCOL_RANGE,
+            client: None,
+        }
+    }
+
+    /// Unity でないアプリのブリッジの名乗り（`client` はそのアプリの名前。画面の文の「Unity」の所に出る。例: "Roblox Studio"）。
+    /// つなぐ側の役は Unity のブリッジと同じ。名前は版の欄の後ろに載るので、版も名乗ること（`with_version`）。
+    /// 名前が決まり（`valid_client_name`）に合わなければ名乗らない。
+    pub fn client(client: &str, agent: &str) -> Identity {
+        Identity {
+            client: crate::message::valid_client_name(client).then(|| client.to_owned()),
+            ..Identity::unity(agent)
         }
     }
 
@@ -232,6 +246,8 @@ pub struct PeerInfo {
     /// None は版の欄を送らない古い相手。
     pub versions: Option<VersionInfo>,
     pub features: u64,
+    /// つなぐ側のアプリの名前（`Hello::client`）。None は名乗らない相手（Unity のブリッジ・スタンドアロン）。
+    pub client: Option<String>,
 }
 
 impl PeerInfo {
@@ -267,13 +283,17 @@ impl LinkInfo {
     /// 版のずれ。
     pub fn skew(&self) -> SkewReport {
         let peer_version = self.peer.app_version();
+        // 名前を名乗るブリッジ（Unity でないアプリ）の版は、Unity のパッケージの版と別の番号。スタンドアロンの求める版
+        // （`MIN_UNITY_PACKAGE`）とは、どちらの側から見ても比べない。ブリッジがスタンドアロンに求める版と、機能の印のずれは今までどおり
         let update_peer = match peer_version {
+            _ if self.peer.client.is_some() => None,
             // 版の欄を送らない相手は、この仕組みより古い。上げるのを勧める（求める版があれば添える）
             None => Some(self.own.min_peer),
             Some(v) if v < self.own.min_peer => Some(self.own.min_peer),
             Some(_) => None,
         };
         let update_self = match (self.own.app_version, self.peer.versions) {
+            _ if self.own.client.is_some() => None,
             (Some(own), Some(peer)) if own < peer.min_peer => Some(peer.min_peer),
             _ => None,
         };

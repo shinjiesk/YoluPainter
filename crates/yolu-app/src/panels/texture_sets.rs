@@ -71,39 +71,41 @@ pub fn set_state(app: &AppState, index: usize) -> Option<SetLook> {
                 .iter()
                 .any(|r| r.channel == yolu_protocol::channel::COLOR)
         });
+    // 文に出す相手のアプリの名前（つながっている相手が挨拶で名乗った名前。名乗らない相手・つながっていないときは Unity）
+    let peer = app.link.peer_name();
     if !set.visible {
         return look(
             "visibility_off",
             t::TEXT_DIM,
-            app.lang.pick("3D ビューと Unity に見せていない", "Hidden in the 3D View and Unity").into(),
+            app.lang.pick(format!("3D ビューと {peer} に見せていない"), format!("Hidden in the 3D View and {peer}")),
         );
     }
     let published = app.link.published.contains(&set.uid);
     let unpainted = app.view3d.unpainted.contains(&(material as i32));
+    let shown = || app.lang.pick(format!("{peer} に見せている"), format!("Shown in {peer}"));
     if !routed || unpainted {
         // 行の印は 1 つ。Unity の流し込み先が無いことと、3D ビューの予算で絵を見せていないことは別の事実なので、どちらもツールチップで言う
         // （予算の警告が、Unity に見えない警告や「Unity に見せている」の印を隠さない）
-        let mut lines: Vec<&str> = Vec::new();
+        let mut lines: Vec<String> = Vec::new();
         if !routed {
-            lines.push(app.lang.pick("Unity 側にこのマテリアルの Color の流し込み先が無い（Unity には見えない）", "This material has no Color route in Unity (not shown in Unity)."));
+            lines.push(app.lang.pick(
+                format!("{peer} 側にこのマテリアルの Color の流し込み先が無い（{peer} には見えない）"),
+                format!("This material has no Color route in {peer} (not shown in {peer})."),
+            ));
         }
         if unpainted {
             lines.push(app.lang.pick(
                 "3D ビューに絵を見せていない: GPU のメモリの予算が足りない（今のセットから遠いセットから見せない。絵と書き出しはそのまま）",
                 "Not shown in the 3D View: over the GPU memory budget (the sets farthest from the current one are left out; the texture and exports are unchanged)",
-            ));
+            ).to_owned());
             if published && routed {
-                lines.push(app.lang.pick("Unity に見せている", "Shown in Unity"));
+                lines.push(shown());
             }
         }
         return look("warning", t::WARNING, lines.join("\n"));
     }
     if published {
-        return look(
-            "sync",
-            t::ACCENT,
-            app.lang.pick("Unity に見せている", "Shown in Unity").into(),
-        );
+        return look("sync", t::ACCENT, shown());
     }
     None
 }
@@ -360,6 +362,11 @@ fn set_row(
         }
     }
 
+    // 文に出す相手のアプリの名前は `set_state` と同じ（名乗らない相手・つながっていないときは Unity）
+    let hide = app.lang.pick(
+        format!("隠す（3D ビューと {} に見せない）", app.link.peer_name()),
+        format!("Hide in the 3D View and {}", app.link.peer_name()),
+    );
     if w::icon_button(
         ui,
         eye,
@@ -370,7 +377,7 @@ fn set_row(
             "visibility_off"
         },
         if visible {
-            app.lang.pick("隠す（3D ビューと Unity に見せない）", "Hide in the 3D View and Unity")
+            hide.as_str()
         } else {
             app.lang.pick("見せる", "Show")
         },

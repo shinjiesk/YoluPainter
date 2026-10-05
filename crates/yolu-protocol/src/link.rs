@@ -698,6 +698,7 @@ pub fn accept_as(
             agent: hello.agent.clone(),
             versions: hello.versions,
             features: hello.features,
+            client: hello.client.clone(),
         },
     });
     conn.send(&Message::Welcome(Welcome {
@@ -743,6 +744,7 @@ pub fn connect_and_greet_as(
             proof: key.hello_proof(&nonce),
         }),
         versions: own.version_info(),
+        client: own.client.clone(),
     }))?;
     let welcome = match reader.next_within(&conn, HANDSHAKE_TIMEOUT)? {
         Received::Message(Message::Welcome(w)) => w,
@@ -785,6 +787,7 @@ pub fn connect_and_greet_as(
             agent: welcome.agent.clone(),
             versions: welcome.versions,
             features: welcome.features,
+            client: None,
         },
     });
     Ok((conn, reader, welcome))

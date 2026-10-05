@@ -24,6 +24,8 @@ pub const MIN_PROTOCOL_VERSION: u16 = 1;
 
 /// 名前・鍵などの文字列の上限（バイト）。
 pub const MAX_NAME_BYTES: usize = 1024;
+/// つなぐ側のアプリの名前（`Hello::client`）の上限（バイト）。画面の文に入れる短い名前。
+pub const MAX_CLIENT_NAME_BYTES: usize = 64;
 /// 共有メモリのファイルのパスの上限（バイト）。
 pub const MAX_PATH_BYTES: usize = 4096;
 /// 1 つのモデルのマテリアルの数の上限。
@@ -180,6 +182,18 @@ pub struct Hello {
     pub auth: Option<HelloAuth>,
     /// 自分のアプリの版と、求める相手の版（鍵の欄のさらに後ろに足した欄。無いのは版を名乗らない古いブリッジ。鍵の欄が無ければ書かない）。
     pub versions: Option<VersionInfo>,
+    /// つなぐ側のアプリの名前（画面の文に出す。例: "Roblox Studio"。版の欄のさらに後ろに足した欄。無いのは名乗らないブリッジで、
+    /// スタンドアロンは今までどおり Unity として扱う。版の欄が無ければ書かない。決まりは `valid_client_name`）。
+    pub client: Option<String>,
+}
+
+/// つなぐ側のアプリの名前として使えるか（空でない・前後に空白が無い・`MAX_CLIENT_NAME_BYTES` 以下・制御文字が無い）。
+/// 画面の文にそのまま入れるので、送る側も読む側もここで確かめる（合わない名前は、名乗らないものとして扱う）。
+pub fn valid_client_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_CLIENT_NAME_BYTES
+        && name.trim() == name
+        && !name.chars().any(char::is_control)
 }
 
 /// 挨拶への返事（スタンドアロン → Unity）。
@@ -655,6 +669,10 @@ impl Message {
                     // 版の欄は鍵の欄の後ろの位置で決まる。鍵の欄が無ければ書かない（古い読み手が版の欄を鍵の欄と読み違えないように）
                     if let Some(v) = &h.versions {
                         write_versions(&mut w, v);
+                        // 名前の欄は版の欄の後ろの位置で決まる。版の欄が無ければ書かない
+                        if let Some(client) = &h.client {
+                            w.str(client);
+                        }
                     }
                 }
             }
@@ -847,6 +865,12 @@ impl Message {
                 } else {
                     None
                 };
+                // 名前の欄は版の欄の後ろ。無ければ名乗らないブリッジ（欄の後ろは、さらに新しい版の欄として読み飛ばす）
+                let client = if versions.is_some() {
+                    read_client(r)
+                } else {
+                    None
+                };
                 Message::Hello(Hello {
                     min_version,
                     max_version,
@@ -854,6 +878,7 @@ impl Message {
                     features,
                     auth,
                     versions,
+                    client,
                 })
             }
             Kind::Bye => Message::Bye,
@@ -1210,6 +1235,13 @@ fn read_versions(r: &mut Reader<'_>) -> Result<Option<VersionInfo>, DecodeError>
         app: read_version(r)?,
         min_peer: read_version(r)?,
     }))
+}
+
+/// つなぐ側のアプリの名前の欄。無い・途中で切れている・決まりに合わない（空・長すぎる・制御文字など）なら None（名乗らないブリッジ
+/// として読み、今までどおりつなぐ。決まりに合わない名前は画面の文に入れない）。
+fn read_client(r: &mut Reader<'_>) -> Option<String> {
+    let client = r.str(MAX_CLIENT_NAME_BYTES, "つなぐ側のアプリの名前").ok()?;
+    valid_client_name(&client).then_some(client)
 }
 
 fn write_materials(w: &mut Writer, materials: &[MaterialInfo]) {

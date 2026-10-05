@@ -168,6 +168,7 @@ fn a_bridge_from_another_version_is_rejected() {
         features: 0,
         auth: Some(good_auth(&key)),
         versions: None,
+        client: None,
     })))
     .unwrap();
     let mut frames = FrameReader::new();
@@ -371,6 +372,7 @@ fn hello_with(auth: Option<HelloAuth>) -> Hello {
         features: 0,
         auth,
         versions: None,
+        client: None,
     }
 }
 

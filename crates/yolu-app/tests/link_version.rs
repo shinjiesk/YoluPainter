@@ -362,6 +362,7 @@ fn refused_greeting(
             proof: key.hello_proof(&nonce),
         }),
         versions,
+        client: None,
     })))
     .unwrap();
     let mut frames = FrameReader::new();

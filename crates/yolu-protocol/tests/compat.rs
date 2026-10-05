@@ -453,6 +453,7 @@ fn a_protocol_range_that_does_not_overlap_is_refused_with_which_side_to_update()
             app: V(0, 9, 0),
             min_peer: V(0, 5, 0),
         }),
+        client: None,
     };
     let reject = negotiate_as(&own, &future).unwrap_err();
     assert_eq!(reject.code, RejectCode::VersionMismatch);
@@ -509,6 +510,7 @@ fn a_protocol_range_that_does_not_overlap_is_refused_with_which_side_to_update()
         features: 0,
         auth: None,
         versions: None,
+        client: None,
     };
     let reject = negotiate_as(&own, &old).unwrap_err();
     assert!(
@@ -655,6 +657,7 @@ fn a_refusal_for_the_version_range_reaches_the_bridge_with_its_detail() {
             app: V(1, 0, 0),
             min_peer: V(0, 7, 0),
         }),
+        client: None,
     })))
     .unwrap();
     let mut frames = FrameReader::new();
@@ -687,4 +690,50 @@ fn the_identity_decides_which_fields_go_on_the_wire() {
         })
     );
     assert_eq!(Identity::standalone("s").min_peer, MIN_UNITY_PACKAGE);
+    // アプリの名前を名乗るのは `Identity::client` だけ。決まりに合わない名前は名乗らない
+    assert_eq!(Identity::unity("u").client, None);
+    assert_eq!(Identity::standalone("s").client, None);
+    let named = Identity::client("Roblox Studio", "b");
+    assert_eq!(named.client.as_deref(), Some("Roblox Studio"));
+    assert_eq!((named.product, named.min_peer), (Product::Unity, MIN_STANDALONE));
+    assert_eq!(Identity::client("a\nb", "b").client, None);
+}
+
+/// Unity でないアプリのブリッジは、挨拶でアプリの名前を名乗れる。スタンドアロンは相手の名乗りとして受け取り、名乗らない相手
+/// （Unity のブリッジ）は今までどおり名前が無い。名前は版の欄の後ろに載るので、版を名乗らないブリッジの名前は届かない。
+#[test]
+fn a_bridge_of_another_app_tells_its_name_in_the_greeting() {
+    let roblox = |version| {
+        Identity::client("Roblox Studio", "試験のほかのアプリ")
+            .with_version(version)
+            .with_min_peer(V(0, 3, 0))
+    };
+    let named = connect_pair("named", standalone(Some(V(0, 3, 1)), V(0, 9, 0), 0), roblox(Some(V(0, 1, 0))));
+    assert_eq!(named.hello.client.as_deref(), Some("Roblox Studio"));
+    let s = named.standalone_conn.link_info().unwrap();
+    assert_eq!(s.peer.client.as_deref(), Some("Roblox Studio"));
+    // 返事に名前の欄は無い（スタンドアロンは名乗らない）
+    let c = named.unity_conn.link_info().unwrap();
+    assert_eq!((c.peer.client.as_deref(), c.own.client.as_deref()), (None, Some("Roblox Studio")));
+    // 版の番号が別なので、スタンドアロンが Unity のパッケージに求める版（0.9.0）とは、どちらの側から見ても比べない
+    assert!(!s.skew().is_skewed(), "{:?}", s.skew());
+    assert!(!c.skew().is_skewed(), "{:?}", c.skew());
+
+    // ブリッジがスタンドアロンに求める版は、今までどおり比べる
+    let old_standalone = connect_pair("namedolds", standalone(Some(V(0, 2, 0)), V(0, 9, 0), 0), roblox(Some(V(0, 1, 0))));
+    let s = old_standalone.standalone_conn.link_info().unwrap().skew();
+    assert_eq!((s.update_self, s.update_peer), (Some(V(0, 3, 0)), None));
+    let c = old_standalone.unity_conn.link_info().unwrap().skew();
+    assert_eq!((c.update_peer, c.update_self), (Some(V(0, 3, 0)), None));
+
+    // 名乗らない相手（Unity のブリッジ）は、今までどおり
+    let unity_pair = connect_pair("unnamed", standalone(Some(V(0, 3, 1)), V(0, 9, 0), 0), unity(Some(V(0, 1, 0)), V(0, 3, 0), 0));
+    assert_eq!(unity_pair.hello.client, None);
+    let s = unity_pair.standalone_conn.link_info().unwrap();
+    assert_eq!(s.peer.client, None);
+    assert_eq!(s.skew().update_peer, Some(V(0, 9, 0)));
+
+    // 版を名乗らなければ、名前も届かない
+    let versionless = connect_pair("namednov", standalone(Some(V(0, 3, 1)), V(0, 0, 0), 0), roblox(None));
+    assert_eq!(versionless.hello.client, None);
 }

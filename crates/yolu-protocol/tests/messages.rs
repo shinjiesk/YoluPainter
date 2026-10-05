@@ -116,6 +116,7 @@ fn all_messages() -> Vec<Message> {
                 app: AppVersion::new(0, 3, 1),
                 min_peer: AppVersion::new(0, 1, 0),
             }),
+            client: None,
         }),
         Message::Hello(Hello {
             min_version: 1,
@@ -127,6 +128,7 @@ fn all_messages() -> Vec<Message> {
                 proof: [2; 32],
             }),
             versions: None,
+            client: None,
         }),
         Message::Hello(Hello {
             min_version: 1,
@@ -135,6 +137,7 @@ fn all_messages() -> Vec<Message> {
             features: 0,
             auth: None,
             versions: None,
+            client: None,
         }),
         Message::Bye,
         Message::Model(sample_model()),
@@ -423,6 +426,7 @@ fn unknown_kinds_and_broken_payloads_are_refused() {
         features: 0,
         auth: None,
         versions: None,
+        client: None,
     });
     assert!(Message::decode(Kind::Hello as u16, &hello.encode_payload()).is_err());
     // 枠の頭は種類を問わず作れる（知らない種類は読む側で断る）
@@ -443,6 +447,7 @@ fn the_version_fields_are_not_written_without_the_key_fields() {
         features: 0,
         auth: None,
         versions,
+        client: None,
     };
     let bare = Message::Hello(Hello { versions: None, ..hello.clone() }).encode_payload();
     assert_eq!(Message::Hello(hello).encode_payload(), bare);
@@ -471,6 +476,7 @@ fn an_old_reader_reads_the_front_of_a_greeting_with_the_new_fields() {
             app: AppVersion::new(0, 3, 0),
             min_peer: AppVersion::new(0, 1, 0),
         }),
+        client: None,
     });
     let payload = new.encode_payload();
     // 古い読み手 = 鍵の欄まで読んで、残りを読み飛ばす読み手。ここでは版の欄の 12 バイトを切り落として読んで、前半が同じことを見る
@@ -481,5 +487,59 @@ fn an_old_reader_reads_the_front_of_a_greeting_with_the_new_fields() {
             assert_eq!(o.versions, None);
         }
         other => panic!("{other:?}"),
+    }
+}
+
+/// つなぐ側のアプリの名前は版の欄の後ろに載る: 往復し、名前の欄を知らない古い読み手には名前の無い挨拶と同じに読め、版の欄が無ければ
+/// 書かない。途中で切れた名前・決まりに合わない名前は、名乗らない相手として読む（つなぐのは断らず、画面の文に入れない）。
+#[test]
+fn the_client_name_rides_behind_the_version_fields() {
+    let greeting = |client: Option<&str>, versions: bool| Hello {
+        min_version: 1,
+        max_version: 1,
+        agent: "ほかのアプリのブリッジ".into(),
+        features: 0,
+        auth: Some(HelloAuth { nonce: [5; 32], proof: [6; 32] }),
+        versions: versions.then_some(VersionInfo {
+            app: AppVersion::new(0, 1, 0),
+            min_peer: AppVersion::ZERO,
+        }),
+        client: client.map(str::to_owned),
+    };
+    let decode = |payload: &[u8]| match Message::decode(Kind::Hello as u16, payload).unwrap() {
+        Message::Hello(h) => h,
+        other => panic!("{other:?}"),
+    };
+    let named = greeting(Some("Roblox Studio"), true);
+    let payload = Message::Hello(named.clone()).encode_payload();
+    assert_eq!(decode(&payload), named);
+    // 古い読み手 = 版の欄まで読んで、残りを読み飛ばす読み手。名前の無い挨拶と同じ前半を読む
+    let unnamed = greeting(None, true);
+    let unnamed_payload = Message::Hello(unnamed.clone()).encode_payload();
+    assert_eq!(&payload[..unnamed_payload.len()], &unnamed_payload[..]);
+    assert_eq!(decode(&unnamed_payload), unnamed);
+    // 名前の後ろにさらに新しい版が足した欄は読み飛ばす。名前の途中で切れていれば、名乗らない相手として読む（版の欄は残る）
+    let mut longer = payload.clone();
+    longer.extend_from_slice(&[1, 2, 3, 4, 5]);
+    assert_eq!(decode(&longer), named);
+    assert_eq!(decode(&payload[..payload.len() - 1]), unnamed);
+    // 版の欄が無ければ書かない（古い読み手が名前の欄を版の欄と読み違えない）
+    assert_eq!(
+        Message::Hello(greeting(Some("Roblox Studio"), false)).encode_payload(),
+        Message::Hello(greeting(None, false)).encode_payload()
+    );
+    // 決まりに合わない名前（空・長すぎる・制御文字・前後の空白）は、名乗らない相手として読む
+    let with_name_bytes = |name: &str| {
+        let mut payload = unnamed_payload.clone();
+        payload.extend((name.len() as u32).to_le_bytes());
+        payload.extend(name.as_bytes());
+        payload
+    };
+    let longest = "x".repeat(MAX_CLIENT_NAME_BYTES);
+    assert_eq!(decode(&with_name_bytes(&longest)).client, Some(longest.clone()));
+    let too_long = format!("{longest}x");
+    for bad in ["", "a\nb", " Roblox Studio", "Roblox Studio ", "   ", too_long.as_str()] {
+        assert!(!valid_client_name(bad), "{bad:?}");
+        assert_eq!(decode(&with_name_bytes(bad)), unnamed, "{bad:?}");
     }
 }

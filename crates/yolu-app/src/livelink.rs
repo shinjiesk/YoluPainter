@@ -62,6 +62,11 @@ pub fn identity() -> Identity {
 const BUSY_TEXT: &str =
     "スタンドアロンの YoluPainter はほかの Unity とつながっています（つなげるのは 1 つ）。";
 
+/// 画面の文に出す、相手のアプリの名前: 挨拶で名乗った名前（`Hello::client`。Unity でないアプリのブリッジ）。名乗らない相手は Unity。
+pub fn client_name(client: Option<&str>) -> &str {
+    client.unwrap_or("Unity")
+}
+
 /// つながりの様子。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum LinkStatus {
@@ -148,7 +153,8 @@ impl LinkView {
             ),
             LinkStatus::Connected { version, .. } => lang.pick(
                 format!(
-                    "Live Link: Unity とつながっています（版 {version}・セット {}）",
+                    "Live Link: {} とつながっています（版 {version}・セット {}）",
+                    self.peer_name(),
                     self.published.len()
                 ),
                 format!(
@@ -209,11 +215,24 @@ impl LinkView {
         }
     }
 
+    /// 画面の文に出す、相手のアプリの名前: つながっている相手が挨拶で名乗った名前。名乗らない相手・つながっていないときは Unity。
+    pub fn peer_name(&self) -> &str {
+        let client = match (&self.status, &self.link) {
+            (LinkStatus::Connected { .. }, Some(link)) => link.peer.client.as_deref(),
+            _ => None,
+        };
+        client_name(client)
+    }
+
     /// つながっている Unity の名前（挨拶の名乗りから。「(Unity 2022.3.22f1)」の形なら版の名前だけ）。つながっていなければ None。
+    /// アプリの名前を名乗る相手（Unity でないアプリのブリッジ）は、その名前。
     pub fn unity_name(&self) -> Option<String> {
         let LinkStatus::Connected { agent, .. } = &self.status else {
             return None;
         };
+        if let Some(client) = self.link.as_ref().and_then(|l| l.peer.client.as_ref()) {
+            return Some(client.clone());
+        }
         let version = agent
             .find("(Unity ")
             .and_then(|at| {
@@ -235,7 +254,10 @@ impl LinkView {
             },
             (_, _, Some((NoticeLevel::Error, n))) => format!("{summary}\n{n}"),
             _ => match self.skew() {
-                Some(skew) => format!("{summary}\n{}", skew_tooltip(lang, &skew)),
+                Some(skew) => {
+                    let client = self.link.as_ref().and_then(|l| l.peer.client.as_deref());
+                    format!("{summary}\n{}", skew_tooltip(lang, &skew, client))
+                }
                 None => summary,
             },
         }
@@ -254,10 +276,14 @@ pub enum LinkIndicator {
     Failed,
 }
 
-fn product_name(lang: Lang, product: Product) -> &'static str {
-    match product {
-        Product::Unity => lang.pick("Unity のパッケージ", "Unity package"),
-        Product::Standalone => lang.pick("スタンドアロン", "standalone"),
+/// 製品の名前。`client` は、つなぐ側が挨拶で名乗ったアプリの名前（Unity でないアプリのブリッジ。分からない・名乗らなければ None）。
+fn product_name(lang: Lang, product: Product, client: Option<&str>) -> String {
+    match (product, client) {
+        (Product::Unity, Some(client)) => {
+            lang.pick(format!("{client} のブリッジ"), format!("{client} bridge"))
+        }
+        (Product::Unity, None) => lang.pick("Unity のパッケージ", "Unity package").into(),
+        (Product::Standalone, _) => lang.pick("スタンドアロン", "standalone").into(),
     }
 }
 
@@ -280,8 +306,8 @@ fn feature_names(lang: Lang, mask: u64) -> String {
 }
 
 /// 上げる製品と求める版の 1 行（「○○を 0.4.0 以上に上げる必要があります」。版の指定が無ければ「○○を更新する必要があります」）。
-fn update_line(lang: Lang, product: Product, to: Option<AppVersion>) -> String {
-    let what = product_name(lang, product);
+fn update_line(lang: Lang, product: Product, client: Option<&str>, to: Option<AppVersion>) -> String {
+    let what = product_name(lang, product, client);
     match to.filter(|v| !v.is_zero()) {
         Some(v) => lang.pick(
             format!("{what}を {v} 以上に上げる必要があります"),
@@ -309,28 +335,36 @@ fn refusal_tooltip(lang: Lang, refusal: &VersionRefusal) -> String {
                 u.0, u.1, s.0, s.1
             ),
         ),
-        update_line(lang, refusal.update, refusal.to)
+        // 断った相手の挨拶は残らないので、名乗った名前は分からない（Unity のパッケージとして書く）
+        update_line(lang, refusal.update, None, refusal.to)
     )
 }
 
 /// つないだままの版のずれのツールチップの文: 両方の版・どちらを上げればよいか・使えない機能の名前。
-fn skew_tooltip(lang: Lang, skew: &SkewReport) -> String {
+/// `client` は、相手が挨拶で名乗ったアプリの名前（名乗らない Unity のブリッジは None）。
+fn skew_tooltip(lang: Lang, skew: &SkewReport, client: Option<&str>) -> String {
     let own = skew
         .own_version
         .map_or_else(|| lang.pick("不明", "unknown").to_owned(), |v| v.to_string());
     let peer = skew
         .peer_version
         .map_or_else(|| lang.pick("不明", "unknown").to_owned(), |v| v.to_string());
-    let mut lines = vec![lang.pick(
-        format!("スタンドアロン {own}・Unity のパッケージ {peer}"),
-        format!("Standalone {own} · Unity package {peer}"),
-    )];
-    // 自分はスタンドアロン、相手は Unity のパッケージ
+    let mut lines = vec![match client {
+        Some(client) => lang.pick(
+            format!("スタンドアロン {own}・{client} のブリッジ {peer}"),
+            format!("Standalone {own} · {client} bridge {peer}"),
+        ),
+        None => lang.pick(
+            format!("スタンドアロン {own}・Unity のパッケージ {peer}"),
+            format!("Standalone {own} · Unity package {peer}"),
+        ),
+    }];
+    // 自分はスタンドアロン、相手は Unity のパッケージ（か、名前を名乗るアプリのブリッジ）
     if skew.peer_should_update() {
-        lines.push(update_line(lang, Product::Unity, skew.update_peer));
+        lines.push(update_line(lang, Product::Unity, client, skew.update_peer));
     }
     if skew.own_should_update() {
-        lines.push(update_line(lang, Product::Standalone, skew.update_self));
+        lines.push(update_line(lang, Product::Standalone, client, skew.update_self));
     }
     let apart = skew.missing_on_peer | skew.missing_here;
     if apart != 0 {
@@ -368,6 +402,8 @@ enum Event {
     /// ほかの Unity とつながっているので断った。
     Busy {
         agent: String,
+        /// 断った相手が挨拶で名乗ったアプリの名前（名乗らない Unity のブリッジは None）。
+        client: Option<String>,
     },
     /// 鍵が無い・合わない挨拶を断った（古いブリッジ・別の鍵・別のユーザーのつなぎ）。
     Unauthorized {
@@ -559,6 +595,12 @@ impl LiveLink {
         self.notice = Some((level, text));
     }
 
+    /// 知らせの文に出す、つながっている相手のアプリの名前（名乗らない相手・つながっていないときは Unity）。
+    fn peer_name(&self) -> String {
+        let client = self.link_info.as_ref().and_then(|l| l.peer.client.as_deref());
+        client_name(client).to_owned()
+    }
+
     /// 頼みを当てる。
     pub fn request(&mut self, request: LinkRequest, ctx: &egui::Context, state: &mut AppState) {
         match request {
@@ -691,6 +733,7 @@ impl LiveLink {
                         common_features: link.as_ref().map_or(0, LinkInfo::common_features),
                     });
                     self.link_info = link;
+                    self.base.set_peer(hello.client.clone());
                     self.status = LinkStatus::Connected {
                         agent: hello.agent.clone(),
                         version,
@@ -699,7 +742,8 @@ impl LiveLink {
                     self.mismatch = None;
                     self.refusal = None;
                     let text = state.lang.pick(format!(
-                        "Live Link: Unity とつながりました（{}・プロトコルの版 {version}）。",
+                        "Live Link: {} とつながりました（{}・プロトコルの版 {version}）。",
+                        client_name(hello.client.as_deref()),
                         hello.agent
                     ), format!(
                         "Live Link: Connected ({} · protocol v{version}).",
@@ -717,8 +761,9 @@ impl LiveLink {
                         state,
                     );
                 }
-                Event::Busy { agent } => {
-                    let text = state.lang.pick(format!("Live Link: 2 つ目の Unity（{agent}）を断りました。"), format!("Live Link: Second Unity connection refused ({agent})."));
+                Event::Busy { agent, client } => {
+                    let peer = client_name(client.as_deref());
+                    let text = state.lang.pick(format!("Live Link: 2 つ目の {peer}（{agent}）を断りました。"), format!("Live Link: Second {peer} connection refused ({agent})."));
                     self.notify(NoticeLevel::Warning, text, state);
                 }
                 Event::Unauthorized { text } => {
@@ -740,10 +785,11 @@ impl LiveLink {
                 }
                 Event::Unknown { session, kind } => {
                     if Some(session) == self.current_session() {
+                        let peer = self.peer_name();
                         let text = state.lang.pick(format!(
-                            "Live Link: Unity からの知らない命令（種類 0x{kind:04x}）を断りました。"
+                            "Live Link: {peer} からの知らない命令（種類 0x{kind:04x}）を断りました。"
                         ), format!(
-                            "Live Link: Unknown Unity command (0x{kind:04x})."
+                            "Live Link: Unknown {peer} command (0x{kind:04x})."
                         ));
                         self.notify(NoticeLevel::Warning, text, state);
                     }
@@ -758,11 +804,12 @@ impl LiveLink {
                         if kind == Kind::MaterialOriginal as u16 {
                             self.base.release_all();
                         }
+                        let peer = self.peer_name();
                         let text = state.lang.pick(format!(
-                            "Live Link: Unity からの命令（{}）を読めません: {text}",
+                            "Live Link: {peer} からの命令（{}）を読めません: {text}",
                             link::kind_name(kind)
                         ), format!(
-                            "Live Link: Invalid Unity command ({}): {text}",
+                            "Live Link: Invalid {peer} command ({}): {text}",
                             link::kind_name(kind)
                         ));
                         self.notify(NoticeLevel::Warning, text, state);
@@ -772,6 +819,8 @@ impl LiveLink {
                     if Some(session) != self.current_session() {
                         continue;
                     }
+                    // 切ると相手の名乗りを捨てるので、知らせの文に出す名前は先に取る
+                    let peer = self.peer_name();
                     self.disconnect(state);
                     self.status = if self.listening.is_some() {
                         LinkStatus::Listening
@@ -781,11 +830,11 @@ impl LiveLink {
                     let (level, text) = match reason {
                         None => (
                             NoticeLevel::Info,
-                            state.lang.pick("Live Link: Unity が切りました。", "Live Link: Unity disconnected.").to_owned(),
+                            state.lang.pick(format!("Live Link: {peer} が切りました。"), format!("Live Link: {peer} disconnected.")),
                         ),
                         Some(e) => (
                             NoticeLevel::Warning,
-                            state.lang.pick(format!("Live Link: Unity とのつながりが切れました: {e}"), format!("Live Link: Connection lost: {e}")),
+                            state.lang.pick(format!("Live Link: {peer} とのつながりが切れました: {e}"), format!("Live Link: Connection lost: {e}")),
                         ),
                     };
                     self.notify(level, text, state);
@@ -927,20 +976,22 @@ impl LiveLink {
             }
             Message::ModelClosed { generation } => {
                 if state.model.as_ref().is_some_and(ours) && state.close_link_model(generation) {
+                    let peer = self.peer_name();
                     self.notify(
                         NoticeLevel::Info,
-                        state.lang.pick("Live Link: Unity がモデルを閉じました。", "Live Link: Unity closed the model.").into(),
+                        state.lang.pick(format!("Live Link: {peer} がモデルを閉じました。"), format!("Live Link: {peer} closed the model.")),
                         state,
                     );
                 }
             }
             Message::Error(e) => {
+                let peer = self.peer_name();
                 let text = state.lang.pick(format!(
-                    "Live Link: Unity からの誤りの知らせ（{}）: {}",
+                    "Live Link: {peer} からの誤りの知らせ（{}）: {}",
                     link::kind_name(e.kind),
                     e.text
                 ), format!(
-                    "Live Link: Unity error ({}): {}",
+                    "Live Link: {peer} error ({}): {}",
                     link::kind_name(e.kind),
                     e.text
                 ));
@@ -1007,6 +1058,7 @@ impl LiveLink {
             out.push(Message::TextureSetRemoved { set: uid });
         }
         let mut notes = Vec::new();
+        let peer = self.peer_name();
         for (index, uid, material) in wanted {
             let doc = state.set_doc(index);
             let name = state
@@ -1024,7 +1076,7 @@ impl LiveLink {
                 if self.failed.contains(&uid) {
                     continue;
                 }
-                match create(session, uid, generation, material, &name, doc, state.lang) {
+                match create(session, uid, generation, material, &name, doc, state.lang, &peer) {
                     Ok((p, tiles)) => {
                         out.push(p.set.announce());
                         self.tiles_sent += tiles as u64;
@@ -1033,7 +1085,7 @@ impl LiveLink {
                     Err(e) => {
                         self.failed.insert(uid);
                         notes.push(state.lang.pick(format!(
-                            "Live Link: テクスチャセット「{name}」を Unity に出せません: {e}"
+                            "Live Link: テクスチャセット「{name}」を {peer} に出せません: {e}"
                         ), format!(
                             "Live Link: Cannot publish texture set “{name}”: {e}"
                         )));
@@ -1083,14 +1135,15 @@ fn create(
     name: &str,
     doc: &Document,
     lang: Lang,
+    peer: &str,
 ) -> Result<(Published, usize), String> {
     if doc.width() > MAX_TEXTURE_SIZE || doc.height() > MAX_TEXTURE_SIZE {
         return Err(lang.pick(format!(
-            "大きさ {}×{} は Unity のテクスチャの上限 {MAX_TEXTURE_SIZE} を超えます",
+            "大きさ {}×{} は {peer} のテクスチャの上限 {MAX_TEXTURE_SIZE} を超えます",
             doc.width(),
             doc.height()
         ), format!(
-            "Texture size {}×{} exceeds the Unity limit ({MAX_TEXTURE_SIZE})",
+            "Texture size {}×{} exceeds the {peer} limit ({MAX_TEXTURE_SIZE})",
             doc.width(),
             doc.height()
         )));
@@ -1203,13 +1256,13 @@ fn serve(
     };
     // 「つなげる Unity は 1 つ」の枠は、挨拶（鍵と版）が済んでから取る。挨拶を送らない接続や鍵の合わない接続が枠を塞がず、
     // つながっていることも、鍵を知っている相手にしか教えない。
-    let busy_agent = std::cell::RefCell::new(String::new());
+    let busy_agent = std::cell::RefCell::new((String::new(), None));
     let claim = |hello: &Hello| {
         active
             .compare_exchange(0, session, Ordering::AcqRel, Ordering::Relaxed)
             .map(|_| ())
             .map_err(|_| {
-                *busy_agent.borrow_mut() = hello.agent.clone();
+                *busy_agent.borrow_mut() = (hello.agent.clone(), hello.client.clone());
                 Reject::plain(RejectCode::Busy, BUSY_TEXT)
             })
     };
@@ -1223,9 +1276,8 @@ fn serve(
     ) {
         Ok(x) => x,
         Err(LinkError::Rejected(r)) if r.code == RejectCode::Busy => {
-            wake(Event::Busy {
-                agent: busy_agent.take(),
-            });
+            let (agent, client) = busy_agent.take();
+            wake(Event::Busy { agent, client });
             return;
         }
         Err(LinkError::Rejected(r)) if r.code == RejectCode::Unauthorized => {

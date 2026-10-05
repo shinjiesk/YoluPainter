@@ -132,7 +132,12 @@ impl FakeUnity {
         let identity = Identity::unity("試験の Unity")
             .with_version(Some(AppVersion::new(0, 3, 0)))
             .with_features(yolu_app::livelink::FEATURES);
-        let (conn, mut reader, welcome) = connect_and_greet_as(name, &identity).unwrap();
+        FakeUnity::connect_as(name, &identity)
+    }
+
+    /// `connect`（名乗りを選べる。挨拶でアプリの名前を名乗る、Unity でないアプリのブリッジの役）。
+    fn connect_as(name: &str, identity: &Identity) -> FakeUnity {
+        let (conn, mut reader, welcome) = connect_and_greet_as(name, identity).unwrap();
         assert_eq!(welcome.version, PROTOCOL_VERSION);
         assert!(welcome.agent.starts_with("YoluPainter"));
         let (tx, rx) = mpsc::channel();
@@ -468,6 +473,7 @@ fn a_connection_without_the_right_key_is_refused_and_noted_while_the_link_stays_
             features: 0,
             auth,
             versions: None,
+            client: None,
         })))
         .unwrap();
         let mut frames = FrameReader::new();
@@ -521,6 +527,7 @@ fn version_mismatch_and_a_second_unity_are_refused_and_shown() {
         features: 0,
         auth: Some(hello_auth(&yolu_protocol::LinkKey::load(&name).unwrap())),
         versions: None,
+        client: None,
     })))
     .unwrap();
     let mut frames = FrameReader::new();
@@ -1221,4 +1228,50 @@ fn headless_new_document_gets_material_sets_and_painted_document_is_preserved() 
         unity.send(Message::Bye);
         app.until("切断", |s| s.link.status == LinkStatus::Listening);
     }
+}
+
+/// Unity でないアプリのブリッジ（挨拶でアプリの名前を名乗る相手）とつながっているあいだ、状態・知らせ・テクスチャセットの印の文は、
+/// 名乗った名前で言う（「Unity」と言わない）。名乗らない相手（Unity のブリッジ）の文は今までどおりで、ほかの試験が確かめている。
+#[test]
+fn headless_a_bridge_of_another_app_is_called_by_the_name_it_tells() {
+    use yolu_app::lang::Lang;
+    use yolu_app::panels::texture_sets::set_state;
+    let (mut a, name) = Headless::listen(256, "hnamed");
+    let identity = Identity::client("Roblox Studio", "試験のほかのアプリ")
+        .with_version(Some(AppVersion::new(0, 1, 0)))
+        .with_features(yolu_app::livelink::FEATURES);
+    let mut other = FakeUnity::connect_as(&name, &identity);
+    a.until("つながる", |s| matches!(s.link.status, LinkStatus::Connected { .. }));
+    let named = |text: &str, what: &str| {
+        assert!(text.contains("Roblox Studio") && !text.contains("Unity"), "{what}: {text}");
+    };
+    named(&a.state.message, "つながった知らせ");
+    assert!(a.state.message.contains("Roblox Studio とつながりました"), "{}", a.state.message);
+    assert_eq!(a.state.link.peer_name(), "Roblox Studio");
+    assert_eq!(a.state.link.unity_name().as_deref(), Some("Roblox Studio"));
+    named(&a.state.link.summary_in(Lang::Ja), "状態の文");
+    for lang in [Lang::Ja, Lang::En] {
+        let tip = a.state.link.tooltip(lang);
+        assert!(!tip.contains("Unity"), "入口の印のツールチップ: {tip}");
+    }
+
+    // 読めなかった元の絵の知らせと、出したセットの印（この試験の役は元の絵を読めない: `FakeUnity::send`）
+    other.send(Message::Model(model(1, vec![material("Body", 256, true)])));
+    a.until("元の絵の知らせ", |s| s.message.contains("読めませんでした"));
+    named(&a.state.message, "元の絵の知らせ");
+    other.collect_until(&mut a, "TextureSet", |got| {
+        got.iter().any(|m| matches!(m, Message::TextureSet(_)))
+    });
+    let shown = (0..a.state.sets.len())
+        .filter_map(|i| set_state(&a.state, i))
+        .find(|look| look.icon == "sync")
+        .expect("出したセットの印");
+    assert_eq!(shown.tooltip, "Roblox Studio に見せている");
+
+    // 切れた知らせ（切ると相手の名乗りは捨てるが、知らせは切れた相手の名前で言う）
+    other.send(Message::Bye);
+    a.until("切断", |s| s.link.status == LinkStatus::Listening);
+    assert!(a.state.message.contains("Roblox Studio が切りました"), "{}", a.state.message);
+    named(&a.state.message, "切れた知らせ");
+    assert_eq!(a.state.link.peer_name(), "Unity", "つながっていないときは、今までどおり");
 }

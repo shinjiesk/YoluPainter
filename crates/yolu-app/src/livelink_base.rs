@@ -152,6 +152,8 @@ pub struct LiveBase {
     progress: Instant,
     /// 入れるのを待っている元の絵の画素のバイトの合計の上限（既定は [`MAX_PENDING_BYTES`]）。
     pending_limit: u64,
+    /// つながっている相手が挨拶で名乗ったアプリの名前（知らせの文に出す。None は名乗らない Unity のブリッジ）。
+    peer: Option<String>,
 }
 
 impl Default for LiveBase {
@@ -161,6 +163,7 @@ impl Default for LiveBase {
             waits: BTreeMap::new(),
             progress: Instant::now(),
             pending_limit: MAX_PENDING_BYTES,
+            peer: None,
         }
     }
 }
@@ -316,6 +319,11 @@ impl LiveBase {
         self.generation = 0;
     }
 
+    /// つながった相手が挨拶で名乗ったアプリの名前を覚える（知らせの文の「Unity」の所に出す。名乗らない相手は None）。
+    pub fn set_peer(&mut self, client: Option<String>) {
+        self.peer = client;
+    }
+
     /// 毎フレーム: 揃ったセットへ元の絵を入れ、進みが止まったものをあきらめる。入れなかった・入れられなかったものの理由を 1 つの知らせの文に
     /// まとめて返す。
     pub fn poll(&mut self, state: &mut AppState, session: u64, now: Instant) -> Option<String> {
@@ -328,6 +336,7 @@ impl LiveBase {
             return None;
         }
         let lang = state.lang;
+        let peer = crate::livelink::client_name(self.peer.as_deref()).to_owned();
         let mut failed: Vec<(String, String)> = Vec::new();
         for uid in self.waits.keys().copied().collect::<Vec<_>>() {
             let delivered = self.waits[&uid].arrival.is_some();
@@ -338,7 +347,7 @@ impl LiveBase {
                     let name = set_name(state, uid);
                     failed.push((
                         name,
-                        lang.pick("Unity から届きませんでした", "It did not arrive from Unity").to_owned(),
+                        lang.pick(format!("{peer} から届きませんでした"), format!("It did not arrive from {peer}")),
                     ));
                 }
                 continue;
@@ -348,7 +357,7 @@ impl LiveBase {
                 continue;
             }
             let wait = self.waits.remove(&uid).expect("上で見た");
-            if let Err(reason) = settle(state, uid, wait, lang) {
+            if let Err(reason) = settle(state, uid, wait, lang, &peer) {
                 failed.push((set_name(state, uid), reason));
             }
         }
@@ -377,14 +386,15 @@ fn set_name(state: &AppState, uid: u32) -> String {
 }
 
 /// 揃ったセットの結果を決める: 絵が付いていれば（絵の無いマテリアルなら白を）文書の一番下に入れ、付いていなければ理由を返す。
-fn settle(state: &mut AppState, uid: u32, wait: Wait, lang: Lang) -> Result<(), String> {
+fn settle(state: &mut AppState, uid: u32, wait: Wait, lang: Lang, peer: &str) -> Result<(), String> {
     let source = match wait.arrival {
         Some(Arrival::Unity(o)) => match o.state {
             OriginalState::Image => Source::Original(o),
             OriginalState::Unreadable => {
-                return Err(lang
-                    .pick("Unity が読めませんでした", "Unity could not read it")
-                    .to_owned())
+                return Err(lang.pick(
+                    format!("{peer} が読めませんでした"),
+                    format!("{peer} could not read it"),
+                ))
             }
             OriginalState::TooLarge => {
                 return Err(lang.pick(
@@ -393,12 +403,10 @@ fn settle(state: &mut AppState, uid: u32, wait: Wait, lang: Lang) -> Result<(), 
                 ))
             }
             OriginalState::OverBudget => {
-                return Err(lang
-                    .pick(
-                        "Unity が一度に送れる量を超えました",
-                        "Over the amount Unity sends at once",
-                    )
-                    .to_owned())
+                return Err(lang.pick(
+                    format!("{peer} が一度に送れる量を超えました"),
+                    format!("Over the amount {peer} sends at once"),
+                ))
             }
         },
         Some(Arrival::White) => Source::White,
